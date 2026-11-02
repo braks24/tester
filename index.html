@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GPS Tracking</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="style.css"/>
+</head>
+<body>
+
+    <div class="header">
+        <h1>GPS Tracking</h1>
+        <p>Lacak lokasi perangkat Anda secara real-time</p>
+    </div>
+
+    <div class="container">
+        <!-- Panel Kontrol -->
+        <div class="card">
+            <h2>Kontrol Tracking</h2>
+            <div class="controls">
+                <button id="startBtn" onclick="startTracking()">Start Tracking</button>
+                <button id="stopBtn" onclick="stopTracking()" disabled>Stop Tracking</button>
+            </div>
+
+            <div class="status-box">
+                <p>Status: <span id="status" class="status-text inactive">Non-aktif</span></p>
+            </div>
+
+            <!-- Informasi Koordinat -->
+            <div class="info-grid">
+                <div class="info-item">
+                    <label>Latitude</label>
+                    <span id="lat">-</span>
+                </div>
+                <div class="info-item">
+                    <label>Longitude</label>
+                    <span id="lng">-</span>
+                </div>
+                <div class="info-item">
+                    <label>Akurasi</label>
+                    <span id="accuracy">-</span>
+                </div>
+                <div class="info-item">
+                    <label>Kecepatan</label>
+                    <span id="speed">-</span>
+                </div>
+                <div class="info-item">
+                    <label>Total Jarak</label>
+                    <span id="totalDistance">0 meter</span>
+                </div>
+            </div>
+
+            <!-- Log Riwayat Lokasi -->
+            <h3>Log Pergerakan</h3>
+            <div class="log-container" id="logBox">
+                <p style="color: #888;">Belum ada data lokasi.</p>
+            </div>
+        </div>
+        <div class="card">
+            <h2>Peta Real-Time</h2>
+            <div id="map"></div>
+        </div>
+    </div>
+
+    <!-- Leaflet JS -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+    <!-- Script Tracking & Map -->
+    <script>
+    let map, marker, pathLine;
+    let watchId = null;
+    let pathCoordinates = [];
+    let totalDistanceMeters = 0; // Variabel untuk menyimpan akumulasi jarak
+
+    // Inisialisasi Peta Leaflet
+    function initMap() {
+        map = L.map('map').setView([-6.2088, 106.8456], 13);
+
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '&copy; OpenStreetMap contributors'
+        }).addTo(map);
+
+        pathLine = L.polyline([], { color: '#2563eb', weight: 4 }).addTo(map);
+    }
+
+    // Mulai Pelacakan
+    function startTracking() {
+        if (!navigator.geolocation) {
+            alert("Geolocation tidak didukung oleh browser Anda.");
+            return;
+        }
+
+        // Reset data jarak saat tracking dimulai kembali
+        pathCoordinates = [];
+        totalDistanceMeters = 0;
+        document.getElementById('totalDistance').textContent = "0 meter";
+        pathLine.setLatLngs([]);
+
+        document.getElementById('startBtn').disabled = true;
+        document.getElementById('stopBtn').disabled = false;
+        
+        const statusEl = document.getElementById('status');
+        statusEl.textContent = "Aktif (Mencari Sinyal)";
+        statusEl.className = "status-text active";
+
+        watchId = navigator.geolocation.watchPosition(
+            onSuccess, 
+            onError, 
+            {
+                enableHighAccuracy: true,
+                timeout: 10000,
+                maximumAge: 0
+            }
+        );
+    }
+
+    // Berhentikan Pelacakan & Tampilkan Total Jarak
+    function stopTracking() {
+        if (watchId !== null) {
+            navigator.geolocation.clearWatch(watchId);
+            watchId = null;
+        }
+
+        document.getElementById('startBtn').disabled = false;
+        document.getElementById('stopBtn').disabled = true;
+
+        const statusEl = document.getElementById('status');
+        statusEl.textContent = "Non-aktif";
+        statusEl.className = "status-text inactive";
+        
+        // Format tampilan jarak (jika > 1000 meter, ubah ke kilometer)
+        let distanceText = totalDistanceMeters < 1000 
+            ? `${totalDistanceMeters.toFixed(1)} meter` 
+            : `${(totalDistanceMeters / 1000).toFixed(2)} km`;
+
+        addLog(`Tracking dihentikan. Total jarak tempuh: ${distanceText}`);
+    }
+    // Callback ketika berhasil mendapatkan koordinat (Letakkan ini sebagai fungsi mandiri)
+function onSuccess(position) {
+    const lat = position.coords.latitude;
+    const lng = position.coords.longitude;
+    const accuracy = position.coords.accuracy.toFixed(1) + " meter";
+    const speed = position.coords.speed ? (position.coords.speed * 3.6).toFixed(1) + " km/jam" : "0 km/jam";
+
+    // 1. Update Teks Informasi di UI
+    document.getElementById('lat').textContent = lat.toFixed(6);
+    document.getElementById('lng').textContent = lng.toFixed(6);
+    document.getElementById('accuracy').textContent = accuracy;
+    document.getElementById('speed').textContent = speed;
+
+    const currentLatLng = [lat, lng];
+
+    // 2. Hitung jarak dari titik sebelumnya & akumulasikan total jarak
+    if (pathCoordinates.length > 0) {
+        const lastLatLng = pathCoordinates[pathCoordinates.length - 1];
+        const segmentDistance = calculateHaversineDistance(
+            lastLatLng[0], lastLatLng[1], 
+            lat, lng
+        );
+        totalDistanceMeters += segmentDistance;
+
+        let displayDist = totalDistanceMeters < 1000 
+            ? `${totalDistanceMeters.toFixed(1)} meter` 
+            : `${(totalDistanceMeters / 1000).toFixed(2)} km`;
+        document.getElementById('totalDistance').textContent = displayDist;
+    }
+
+    // 3. Update atau Tambahkan Marker di Peta
+    if (!marker) {
+        marker = L.marker(currentLatLng).addTo(map)
+            .bindPopup("Lokasi Anda saat ini").openPopup();
+    } else {
+        marker.setLatLng(currentLatLng);
+    }
+
+    // 4. Tambahkan koordinat ke jalur lintasan dan gerakkan peta (panTo)
+    pathCoordinates.push(currentLatLng);
+    pathLine.setLatLngs(pathCoordinates);
+    map.panTo(currentLatLng);
+
+    addLog(`Posisi: ${lat.toFixed(5)}, ${lng.toFixed(5)} (Akurasi: ${accuracy})`);
+
+    // 5. Kirim data ke backend PHP
+    sendDataToBackend(lat, lng, position.coords.speed, position.coords.accuracy);
+}
+    // Callback ketika berhasil mendapatkan koordinat
+    function onSuccess(position) {
+        const lat = position.coords.latitude;
+        const lng = position.coords.longitude;
+        const accuracy = position.coords.accuracy.toFixed(1) + " meter";
+        const speed = position.coords.speed ? (position.coords.speed * 3.6).toFixed(1) + " km/jam" : "0 km/jam";
+
+        // Update UI Info
+        document.getElementById('lat').textContent = lat.toFixed(6);
+        document.getElementById('lng').textContent = lng.toFixed(6);
+        document.getElementById('accuracy').textContent = accuracy;
+        document.getElementById('speed').textContent = speed;
+
+        const currentLatLng = [lat, lng];
+
+        // Jika sudah ada titik sebelumnya, hitung jarak dari titik terakhir ke titik saat ini
+        if (pathCoordinates.length > 0) {
+            const lastLatLng = pathCoordinates[pathCoordinates.length - 1];
+            const segmentDistance = calculateHaversineDistance(
+                lastLatLng[0], lastLatLng[1], 
+                lat, lng
+            );
+            totalDistanceMeters += segmentDistance;
+
+            // Update tampilan jarak secara real-time di UI
+            let displayDist = totalDistanceMeters < 1000 
+                ? `${totalDistanceMeters.toFixed(1)} meter` 
+                : `${(totalDistanceMeters / 1000).toFixed(2)} km`;
+            document.getElementById('totalDistance').textContent = displayDist;
+        }
+
+        // Update atau Tambahkan Marker di Peta
+        if (!marker) {
+            marker = L.marker(currentLatLng).addTo(map)
+                .bindPopup("Lokasi Anda saat ini").openPopup();
+        } else {
+            marker.setLatLng(currentLatLng);
+        }
+
+        // Tambahkan koordinat ke jalur lintasan
+        pathCoordinates.push(currentLatLng);
+        pathLine.setLatLngs(pathCoordinates);
+        map.panTo(currentLatLng);
+
+        addLog(`Posisi: ${lat.toFixed(5)}, ${lng.toFixed(5)} (Akurasi: ${accuracy})`);
+
+        sendDataToBackend(lat, lng, position.coords.speed, position.coords.accuracy);
+    }
+
+    // Rumus Haversine untuk menghitung jarak dalam meter antara 2 koordinat GPS
+    function calculateHaversineDistance(lat1, lon1, lat2, lon2) {
+        const R = 6371e3; // Radius bumi dalam meter
+        const dLat = (lat2 - lat1) * Math.PI / 180;
+        const dLon = (lon2 - lon1) * Math.PI / 180;
+        const a = 
+            Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+            Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * 
+            Math.sin(dLon / 2) * Math.sin(dLon / 2);
+        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+        return R * c; // Jarak dalam meter
+    }
+
+    // Callback ketika gagal mendapat koordinat
+    function onError(error) {
+        let errorMsg = "Gagal mengambil lokasi.";
+        switch(error.code) {
+            case error.PERMISSION_DENIED: errorMsg = "Izin akses lokasi ditolak."; break;
+            case error.POSITION_UNAVAILABLE: errorMsg = "Informasi lokasi tidak tersedia."; break;
+            case error.TIMEOUT: errorMsg = "Waktu permintaan lokasi habis."; break;
+        }
+        addLog(`Error: ${errorMsg}`);
+    }
+
+    function addLog(text) {
+        const logBox = document.getElementById('logBox');
+        const time = new Date().toLocaleTimeString('id-ID');
+        const logItem = document.createElement('div');
+        logItem.className = 'log-item';
+        logItem.innerHTML = `<span class="waktu">[${time}]</span> ${text}`;
+        if (logBox.children.length === 1 && logBox.children[0].tagName === 'P') {
+            logBox.innerHTML = '';
+        }
+        logBox.prepend(logItem);
+    }
+
+    function sendDataToBackend(lat, lng, spd, acc) {
+        fetch('save_location.php', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: `latitude=${lat}&longitude=${lng}&speed=${spd || 0}&accuracy=${acc}`
+        }).catch(err => console.error('Gagal mengirim ke PHP:', err));
+    }
+
+    window.onload = initMap;
+
+            // Inisialisasi Peta Leaflet & Muat Riwayat Rute
+function initMap() {
+    // Default center ke Jakarta
+    map = L.map('map').setView([-6.2088, 106.8456], 13);
+
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '&copy; OpenStreetMap contributors'
+    }).addTo(map);
+
+    // Inisialisasi garis polyline kosong
+    pathLine = L.polyline([], { color: '#2563eb', weight: 4 }).addTo(map);
+
+    // AMBIL RIWAYAT RUTE DARI DATABASE
+    loadHistoricalRoute();
+}
+
+// Fungsi untuk mengambil dan merender rute sebelumnya
+function loadHistoricalRoute() {
+    fetch('get_locations.php')
+        .then(response => response.json())
+        .then(result => {
+            if (result.status === "success" && result.data.length > 0) {
+                // Masukkan data koordinat ke array pathCoordinates
+                pathCoordinates = result.data;
+
+                // Tampilkan garis rute di peta
+                pathLine.setLatLngs(pathCoordinates);
+
+                // Arahkan pandangan peta (panTo) ke titik terakhir rute
+                const lastPoint = pathCoordinates[pathCoordinates.length - 1];
+                map.setView(lastPoint, 15);
+
+                // Buat marker di posisi terakhir
+                marker = L.marker(lastPoint).addTo(map)
+                    .bindPopup("Titik Terakhir Perjalanan").openPopup();
+
+                addLog(`Berhasil memuat ${pathCoordinates.length} titik rute riwayat.`);
+            } else {
+                console.log("Tidak ada riwayat rute ditemukan.");
+            }
+        })
+        .catch(err => {
+            console.error("Gagal mengambil riwayat rute:", err);
+            addLog("Gagal memuat riwayat rute dari database.");
+        });
+}
+    </script>
+</body>
+</html>
